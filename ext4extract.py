@@ -34,6 +34,8 @@ class Ext4(object):
     __EXTENT_ENTRY_PACK__ = "<IHHI"
     __DIR_ENTRY_PACK__ = "<IHH"
     __DIR_ENTRY_V2_PACK__ = "<IHBB"
+    __XATTR_HEADER_PACK__ = "<IIIII12s"
+    __XATTR_ENTRY_PACK__ = "<BBHIII"
 
     __SuperBlock__ = namedtuple('Ext4SuperBlock', """
         s_inodes_count
@@ -155,11 +157,29 @@ class Ext4(object):
         file_type
     """)
 
+    __XattrHeader__ = namedtuple('Ext4XattrHeader', """
+        h_magic
+        h_refcount
+        h_blocks
+        h_hash
+        h_checksum
+        h_reserved
+    """)
+    
+    __XattrEntry__ = namedtuple('Ext4XattrEntry', """
+        e_name_len
+        e_name_index
+        e_value_offs
+        e_value_inum
+        e_value_size
+        e_hash
+    """)
+
     class DirEntry:
-        def __init__(self, inode=0, name=None, type=0):
+        def __init__(self, inode=0, name=None, entry_type=0):
             self._inode = inode
             self._name = name
-            self._type = type
+            self._type = entry_type
 
         def __str__(self):
             entry_type = [
@@ -198,6 +218,45 @@ class Ext4(object):
         def type(self, x):
             self._type = x
 
+    def make_superblock(data):
+        return __SuperBlock__._make(unpack(__SUPERBLOCK_PACK__, data))
+
+
+    def make_group_descriptor(data):
+        return __GroupDescriptor__._make(unpack(__GROUP_DESCRIPTOR_PACK__, data))
+
+
+    def make_inode(data):
+        return __Inode__._make(unpack(__INODE_PACK__, data))
+
+
+    def make_extent_header(data):
+        return __ExtentHeader__._make(unpack(__EXTENT_HEADER_PACK__, data))
+
+
+    def make_extent_index(data):
+        return __ExtentIndex__._make(unpack(__EXTENT_INDEX_PACK__, data))
+
+
+    def make_extent_entry(data):
+        return __ExtentEntry__._make(unpack(__EXTENT_ENTRY_PACK__, data))
+
+
+    def make_dir_entry(data):
+        return __DirEntry__._make(unpack(__DIR_ENTRY_PACK__, data))
+
+
+    def make_dir_entry_v2(data):
+        return __DirEntryV2__._make(unpack(__DIR_ENTRY_V2_PACK__, data))
+
+
+    def make_xattr_header(data):
+        return __XattrHeader__._make(unpack(__XATTR_HEADER_PACK__, data))
+
+
+    def make_xattr_entry(data):
+        return __XattrEntry__._make(unpack(__XATTR_ENTRY_PACK__, data))
+
     def __init__(self, filename=None):
         self._ext4 = None
         self._superblock = None
@@ -220,7 +279,7 @@ class Ext4(object):
         gd_offset = (self._superblock.s_first_data_block + 1) * self._block_size \
                     + (bg_num * self._superblock.s_desc_size)
         self._ext4.seek(gd_offset)
-        return self.__GroupDescriptor__._make(unpack(self.__GROUP_DESCRIPTOR_PACK__, self._ext4.read(32)))
+        return make_group_descriptor(self._ext4.read(32))
 
     def _read_inode(self, inode_num):
         inode_bg_num = (inode_num - 1) // self._superblock.s_inodes_per_group
@@ -230,10 +289,10 @@ class Ext4(object):
             (group_desc.bg_inode_table_lo * self._block_size) \
             + (bg_inode_idx * self._superblock.s_inode_size)
         self._ext4.seek(inode_offset)
-        return self.__Inode__._make(unpack(self.__INODE_PACK__, self._ext4.read(128)))
+        return make_inode(self._ext4.read(128))
 
     def _read_extent(self, data, extent_block):
-        hdr = self.__ExtentHeader__._make(unpack(self.__EXTENT_HEADER_PACK__, extent_block[:12]))
+        hdr = make_extent_header(extent_block[:12])
         if hdr.eh_magic != 0xf30a:
             raise RuntimeError("Bad extent magic")
 
@@ -241,16 +300,16 @@ class Ext4(object):
             raw_offset = 12 + (eex * 12)
             entry_raw = extent_block[raw_offset:raw_offset + 12]
             if hdr.eh_depth == 0:
-                entry = self.__ExtentEntry__._make(unpack(self.__EXTENT_ENTRY_PACK__, entry_raw))
+                entry = make_extent_entry(entry_raw)
+                _start = entry.ee_block * self._block_size
+                _size = entry.ee_len * self._block_size
                 self._ext4.seek(entry.ee_start_lo * self._block_size)
-                data += self._ext4.read(self._block_size * entry.ee_len)
+                data[_start:_start + _size] = self._ext4.read(_size)
             else:
-                index = self.__ExtentIndex__._make(unpack(self.__EXTENT_INDEX_PACK__, entry_raw))
+                index = make_extent_index(entry_raw)
                 self._ext4.seek(index.ei_leaf_lo * self._block_size)
                 lower_block = self._ext4.read(self._block_size)
-                data = self._read_extent(data, lower_block)
-
-        return data
+                self._read_extent(data, lower_block)
 
     def _read_data(self, inode):
         data = b''
@@ -260,7 +319,8 @@ class Ext4(object):
         elif inode.i_flags & 0x10000000 or (inode.i_mode & 0xf000 == 0xa000 and inode.i_size_lo <= 60):
             data = inode.i_block
         elif inode.i_flags & 0x80000:
-            data = self._read_extent(data, inode.i_block)
+            data = bytearray(inode.i_size_lo)
+            self._read_extent(data, inode.i_block)
         else:
             raise RuntimeError("Mapped Inodes are not supported")
 
@@ -269,7 +329,7 @@ class Ext4(object):
     def load(self, filename):
         self._ext4 = open(filename, "rb")
         self._ext4.seek(1024)
-        self._superblock = self.__SuperBlock__._make(unpack(self.__SUPERBLOCK_PACK__, self._ext4.read(256)))
+        self._superblock = make_superblock(self._ext4.read(256))
         if self._superblock.s_magic != 0xef53:
             raise RuntimeError("Bad superblock magic")
         incompat = self._superblock.s_feature_incompat
@@ -280,18 +340,17 @@ class Ext4(object):
 
     def read_dir(self, inode_num):
         inode = self._read_inode(inode_num)
-        # noinspection PyTypeChecker
         dir_raw = self._read_data(inode)
         dir_data = list()
         offset = 0
         while offset < len(dir_raw):
             entry_raw = dir_raw[offset:offset + 8]
-            entry = self.DirEntry()
+            entry = DirEntry()
             if self._superblock.s_feature_incompat & 0x2:
-                dir_entry = self.__DirEntryV2__._make(unpack(self.__DIR_ENTRY_V2_PACK__, entry_raw))
+                dir_entry = make_dir_entry_v2(entry_raw)
                 entry.type = dir_entry.file_type
             else:
-                dir_entry = self.__DirEntry__._make(unpack(self.__DIR_ENTRY_PACK__, entry_raw))
+                dir_entry = make_dir_entry(entry_raw)
                 entry_inode = self._read_inode(dir_entry.inode)
                 inode_type = entry_inode.i_mode & 0xf000
                 if inode_type == 0x1000:
@@ -316,23 +375,98 @@ class Ext4(object):
 
     def read_file(self, inode_num):
         inode = self._read_inode(inode_num)
-        # noinspection PyTypeChecker
         return self._read_data(inode)[:inode.i_size_lo], inode.i_atime, inode.i_mtime
 
     def read_link(self, inode_num):
         inode = self._read_inode(inode_num)
-        # noinspection PyTypeChecker
         return self._read_data(inode)[:inode.i_size_lo].decode('utf-8')
+
+    def read_xattr(self, inode):
+        if inode.i_file_acl_lo == 0:
+            return {}
+
+        self._ext4.seek(inode.i_file_acl_lo * self._block_size)
+        xattr_hdr = make_xattr_header(self._ext4.read(32))
+        if xattr_hdr.h_magic != 0xea020000:
+            raise RuntimeError("Bad xattr magic")
+        xattr_data = self._ext4.read((self._block_size * xattr_hdr.h_blocks) - 32)
+
+        xattr_prefix = [
+            "",
+            "user.",
+            "system.posix_acl_access",
+            "system.posix_acl_default",
+            "trusted.",
+            "security.",
+            "system.",
+            "system.richacl"
+        ]
+
+        xattr = {}
+        offset = 0
+        while offset < len(xattr_data):
+            entry = make_xattr_entry(xattr_data[offset:offset + 16])
+            if (entry.e_name_len, entry.e_name_index, entry.e_value_offs, entry.e_value_inum) == (0, 0, 0, 0):
+                break
+            offset += 16
+
+            name = xattr_data[offset:offset + entry.e_name_len].decode('utf-8')
+            offset += entry.e_name_len
+
+            key = xattr_prefix[entry.e_name_index] + name
+            value = xattr_data[entry.e_value_offs:entry.e_value_offs + entry.e_value_size]
+            if value == b'':
+                value = None
+            xattr[key] = value
+
+        return xattr
+
+    def read_meta(self, inode_num):
+        inode = self._read_inode(inode_num)
+        return Metadata(
+            inode=inode_num,
+            itype=inode.i_mode >> 12 & 0xf,
+            size=inode.i_size_lo,
+            ctime=inode.i_ctime,
+            mtime=inode.i_mtime,
+            uid=inode.i_uid,
+            gid=inode.i_gid,
+            mode=inode.i_mode & 0xfff,
+            xattr=self.read_xattr(inode))
 
     @property
     def root(self):
         return self.read_dir(2)
 
+class Metadata:
+    def __init__(self, inode, itype, size, ctime, mtime, uid=0, gid=0, mode=0, xattr={}):
+        self._attr = {
+            'inode': inode,
+            'type': itype,
+            'size': size,
+            'ctime': ctime,
+            'mtime': mtime,
+            'uid': uid,
+            'gid': gid,
+            'mode': mode
+        }
+        self._xattr = xattr
+
+    def __str__(self):
+        attr_s = []
+        for attr in self._attr:
+            attr_s.append("{key}=\"{value}\"".format(key=attr, value=self._attr[attr]))
+        for attr in self._xattr:
+            attr_s.append(attr if self._xattr[attr] is None
+                          else "{key}=\"{value}\"".format(key=attr, value=self._xattr[attr]))
+        return " ".join(attr_s)
 
 class Application(object):
     def __init__(self):
         self._args = None
         self._ext4 = None
+        self._symltbl = None
+        self._metatbl = None
 
     def _parse_args(self):
         parser = argparse.ArgumentParser()
@@ -340,6 +474,8 @@ class Application(object):
         parser.add_argument("-v", "--verbose", dest='verbose', help="verbose output",
                             action='store_true')
         parser.add_argument("-D", "--directory", dest='directory', type=str, help="set output directory", default=".")
+        parser.add_argument("-S", "--dump-symlink-table", dest='symlinks', type=str, help="Generate symlink table")
+        parser.add_argument("-M", "--dump-metadata", dest='metadata', type=str, help="Generate inode metadata table")
         parser.add_argument("filename", type=str, help="EXT4 device or image")
 
         group = parser.add_mutually_exclusive_group()
@@ -364,6 +500,8 @@ class Application(object):
 
         for de in dir_data:
             processed = False
+            if self._metatbl is not None:
+                self._write_meta(de, path)
             if de.type == 1:  # regular file
                 data, atime, mtime = self._ext4.read_file(de.inode)
                 file = open(os.path.join(path, de.name), 'w+b')
@@ -376,10 +514,12 @@ class Application(object):
                     continue
                 self._extract_dir(self._ext4.read_dir(de.inode), path, de.name)
             elif de.type == 7:  # symlink
-                if self._args.skip_symlinks:
-                    continue
                 link = os.path.join(path, de.name)
                 link_to = self._ext4.read_link(de.inode)
+                if self._symltbl is not None:
+                    self._write_symlink(link, link_to)
+                if self._args.skip_symlinks:
+                    continue
                 if self._args.text_symlinks:
                     link = open(link, "w+b")
                     link.write(link_to.encode('utf-8'))
@@ -393,13 +533,40 @@ class Application(object):
             if processed and self._args.verbose:
                 print(os.path.join(os.path.sep, path.lstrip(self._args.directory), de.name))
 
+    def _write_symlink(self, link, link_to):
+        self._symltbl.write(
+            "path=\"{link}\" target=\"{target}\"".format(
+                link=link,
+                target=link_to
+            ) + os.linesep)
+
+    def _write_meta(self, direntry, path):
+        meta = self._ext4.read_meta(direntry.inode)
+        self._metatbl.write(
+            "inode=\"{inode}\" path=\"{path}\" {meta}".format(
+                inode=direntry.inode,
+                meta=meta,
+                path=os.path.join(path, direntry.name)
+            ) + os.linesep)
+
     def _do_extract(self):
         self._ext4 = Ext4(self._args.filename)
         self._extract_dir(self._ext4.root, self._args.directory)
 
     def run(self):
         self._parse_args()
+
+        if self._args.symlinks is not None:
+            self._symltbl = open(self._args.symlinks, "w+")
+        if self._args.metadata is not None:
+            self._metatbl = open(self._args.metadata, "w+")
+
         self._do_extract()
+
+        if self._symltbl is not None:
+            self._symltbl.close()
+        if self._metatbl is not None:
+            self._metatbl.close()
 
 
 def exception_handler(exception_type, exception, traceback):
