@@ -24,6 +24,44 @@ from struct import unpack
 from collections import namedtuple
 import os
 
+def make_superblock(data):
+    return __SuperBlock__._make(unpack(__SUPERBLOCK_PACK__, data))
+
+
+def make_group_descriptor(data):
+    return __GroupDescriptor__._make(unpack(__GROUP_DESCRIPTOR_PACK__, data))
+
+
+def make_inode(data):
+    return __Inode__._make(unpack(__INODE_PACK__, data))
+
+
+def make_extent_header(data):
+    return __ExtentHeader__._make(unpack(__EXTENT_HEADER_PACK__, data))
+
+
+def make_extent_index(data):
+    return __ExtentIndex__._make(unpack(__EXTENT_INDEX_PACK__, data))
+
+
+def make_extent_entry(data):
+    return __ExtentEntry__._make(unpack(__EXTENT_ENTRY_PACK__, data))
+
+
+def make_dir_entry(data):
+    return __DirEntry__._make(unpack(__DIR_ENTRY_PACK__, data))
+
+
+def make_dir_entry_v2(data):
+    return __DirEntryV2__._make(unpack(__DIR_ENTRY_V2_PACK__, data))
+
+
+def make_xattr_header(data):
+    return __XattrHeader__._make(unpack(__XATTR_HEADER_PACK__, data))
+
+
+def make_xattr_entry(data):
+    return __XattrEntry__._make(unpack(__XATTR_ENTRY_PACK__, data))
 
 class Ext4(object):
     __SUPERBLOCK_PACK__ = "<IIIIIIIIIIIIIHHHHHHIIIIHHIHHIII16s16s64sIBBH16sIII16sBBH"
@@ -286,45 +324,6 @@ class Ext4(object):
             raise RuntimeError("Mapped Inodes are not supported")
 
         return data
-
-    def make_superblock(data):
-        return __SuperBlock__._make(unpack(__SUPERBLOCK_PACK__, data))
-
-
-    def make_group_descriptor(data):
-        return __GroupDescriptor__._make(unpack(__GROUP_DESCRIPTOR_PACK__, data))
-
-
-    def make_inode(data):
-        return __Inode__._make(unpack(__INODE_PACK__, data))
-
-
-    def make_extent_header(data):
-        return __ExtentHeader__._make(unpack(__EXTENT_HEADER_PACK__, data))
-
-
-    def make_extent_index(data):
-        return __ExtentIndex__._make(unpack(__EXTENT_INDEX_PACK__, data))
-
-
-    def make_extent_entry(data):
-        return __ExtentEntry__._make(unpack(__EXTENT_ENTRY_PACK__, data))
-
-
-    def make_dir_entry(data):
-        return __DirEntry__._make(unpack(__DIR_ENTRY_PACK__, data))
-
-
-    def make_dir_entry_v2(data):
-        return __DirEntryV2__._make(unpack(__DIR_ENTRY_V2_PACK__, data))
-
-
-    def make_xattr_header(data):
-        return __XattrHeader__._make(unpack(__XATTR_HEADER_PACK__, data))
-
-
-    def make_xattr_entry(data):
-        return __XattrEntry__._make(unpack(__XATTR_ENTRY_PACK__, data))
 
     def load(self, filename):
         self._ext4 = open(filename, "rb")
